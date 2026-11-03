@@ -4,6 +4,16 @@ A mock NSE trading terminal built with Python and Tkinter, made for 21CSC203P Ad
 
 ![The TradeDesk Markets tab, showing the price chart, watchlist, order form, portfolio, top movers and news panels](docs/markets.png)
 
+The design is minimal: black text on white, with green and red used only for price movements.
+
+| Watchlist | Portfolio |
+|---|---|
+| ![Watchlist tab with all instruments, a quote, market depth and buy and sell buttons](docs/watchlist.png) | ![Portfolio tab with holdings, profit and loss, and allocation](docs/portfolio.png) |
+
+| Orders | News |
+|---|---|
+| ![Orders tab with the order book](docs/orders.png) | ![News tab with headline cards](docs/news.png) |
+
 ## Run
 
 ```bash
@@ -14,7 +24,7 @@ It uses only the Python standard library (`tkinter`, `random`, `datetime`, `sys`
 
 ## Features
 
-- Top bar with five tabs: Markets, Watchlist, Portfolio, Orders and News. It also has a dark/light toggle and a live-prices toggle.
+- Top bar with five tabs: Markets, Watchlist, Portfolio, Orders and News. It also has a live-prices toggle.
 - Index ticker strip: NIFTY 50, SENSEX, BANK NIFTY and others.
 - Candle/line price chart drawn on a Tkinter Canvas, with 1D, 1W, 1M and 1Y timeframes and an MA 20 moving average.
 - Watchlist you can search and sort.
@@ -26,7 +36,7 @@ Open limit and stop-loss orders execute, and price alerts fire, while live price
 
 ## Layout
 
-The window has four stacked bands: top bar, ticker strip, content and status bar. In the style of the Bing homepage, panels fill a connected grid, with thin lines instead of empty space between them. They stretch when the window is resized.
+The window has four stacked bands: top bar, ticker strip, content and status bar. Panels fill a connected grid, with thin lines instead of empty space between them. They stretch when the window is resized.
 
 ```text
 +----------------------------------------------------------------+
