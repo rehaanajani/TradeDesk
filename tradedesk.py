@@ -137,6 +137,9 @@ class MarketData:
             dict(time=(now - timedelta(minutes=18)).strftime("%H:%M:%S"), sym="WIPRO", side="BUY",
                  qty=20, kind="Limit", price=550.00, status="Open"),
         ]
+        self.cash = 250000.0
+        self.alerts = []
+        self.events = []
         self._candles = {}
 
     def candles(self, sym, tf):
@@ -163,6 +166,45 @@ class MarketData:
         for (sym, _), data in self._candles.items():
             last, p = data[-1], self.stocks[sym].price
             last[3], last[1], last[2] = p, max(last[1], p), min(last[2], p)
+        self._fill_open_orders()
+        self._check_alerts()
+
+    def _fill_open_orders(self):
+        """Open limit and stop-loss orders execute once the price reaches them."""
+        for o in filter(lambda o: o["status"] == "Open", self.orders):
+            price, buy = self.stocks[o["sym"]].price, o["side"] == "BUY"
+            if o["kind"] == "Limit":
+                hit = price <= o["price"] if buy else price >= o["price"]
+            else:
+                hit = price >= o["price"] if buy else price <= o["price"]
+            if not hit:
+                continue
+            short = o["qty"] > self.holdings.get(o["sym"], [0, 0])[0]
+            if (buy and o["qty"] * o["price"] > self.cash) or (not buy and short):
+                o["status"] = "Rejected"
+            else:
+                o["status"] = "Executed"
+                self._settle(o)
+            self.events.append(f"{o['kind']} {o['side']} {o['sym']}: {o['status'].lower()}")
+
+    def add_alert(self, sym, price):
+        self.alerts.append(dict(sym=sym, price=price, above=price > self.stocks[sym].price))
+        self.events.append(f"Alert set: {sym} at {price:,.2f}")
+
+    def _check_alerts(self):
+        for a in list(self.alerts):
+            price = self.stocks[a["sym"]].price
+            if (price >= a["price"]) if a["above"] else (price <= a["price"]):
+                self.alerts.remove(a)
+                self.events.append(f"Alert: {a['sym']} reached {a['price']:,.2f}")
+
+    def depth(self, sym):
+        """Five simulated bid and ask levels: (bid, bid qty, ask, ask qty)."""
+        price = self.stocks[sym].price
+        rng = random.Random(f"{sym}{price}")
+        step = max(0.05, round(price * 0.0002, 2))
+        return [(price - step * i, rng.randint(50, 5000), price + step * i, rng.randint(50, 5000))
+                for i in range(1, 6)]
 
     def filtered(self, query="", sort="Symbol"):
         q = query.strip().lower()
@@ -184,9 +226,14 @@ class MarketData:
 
     def place(self, order):
         self.orders.insert(0, order)
-        if order["status"] != "Executed":
-            return
+        if order["status"] == "Executed":
+            self._settle(order)
+
+    def _settle(self, order):
+        """Move an executed order into holdings and cash."""
         sym = order["sym"]
+        value = order["qty"] * order["price"]
+        self.cash += -value if order["side"] == "BUY" else value
         q, avg = self.holdings.get(sym, [0, 0.0])
         if order["side"] == "BUY":
             new_q = q + order["qty"]
@@ -242,7 +289,7 @@ class TradeDesk:
         self.data = MarketData()
         self.theme, self.tab, self.symbol = "dark", "Markets", "RELIANCE"
         self.tf, self.chart_type, self.sort_key = "1D", "Candle", "Symbol"
-        self.show_gainers, self.live = True, False
+        self.show_gainers, self.live, self.show_ma = True, False, False
         self.order_state = dict(side="BUY", kind="Market", qty="1")
         root.title("TradeDesk")
         root.geometry("1360x860")
@@ -345,6 +392,15 @@ class TradeDesk:
                  bg=c["panel"], fg=c["muted"], font=(FONT, 10)).pack(side="left")
         self.clock_lbl = tk.Label(bar, bg=c["panel"], fg=c["muted"], font=(FONT, 10), padx=16)
         self.clock_lbl.pack(side="right")
+        self.funds_lbl = tk.Label(bar, bg=c["panel"], fg=c["text"], font=(FONT, 10, "bold"))
+        self.funds_lbl.pack(side="right")
+        self.notice_lbl = tk.Label(bar, bg=c["panel"], fg=c["accent"], font=(FONT, 10, "bold"), padx=16)
+        self.notice_lbl.pack(side="left")
+        self.refresh_status()
+
+    def refresh_status(self):
+        self.funds_lbl.config(text=f"Funds {inr(self.data.cash)}")
+        self.notice_lbl.config(text=self.data.events[-1] if self.data.events else "")
 
     # ---------- timers (event-driven)
     def _clock(self):
@@ -364,6 +420,7 @@ class TradeDesk:
 
     def refresh(self):
         self.refresh_ticker()
+        self.refresh_status()
         for fn in self.refreshers:
             fn()
 
@@ -513,6 +570,15 @@ class TradeDesk:
         head, body = self.tile(page, "Price chart", r, col, colspan=colspan)
         self.segmented(head, ["Candle", "Line"], self.chart_type, self.set_chart_type).pack(side="right")
         self.segmented(head, list(TIMEFRAMES), self.tf, self.set_tf).pack(side="right", padx=(0, 10))
+        ma_btn = FlatButton(head, self, "MA 20", active=self.show_ma, size=9, padx=10, pady=3, base="panel2")
+
+        def toggle_ma():
+            self.show_ma = not self.show_ma
+            ma_btn.set_active(self.show_ma)
+            self.draw_chart()
+
+        ma_btn.command = toggle_ma
+        ma_btn.pack(side="right", padx=(0, 10))
 
         info = tk.Frame(body, bg=c["panel"])
         info.pack(fill="x")
@@ -614,6 +680,13 @@ class TradeDesk:
                 pts += [left + step * i + step / 2, y(candle[3])]
             cv.create_line(*pts, fill=c["accent"], width=2, smooth=False)
 
+        if self.show_ma and n >= 20:
+            closes = [x[3] for x in data]
+            pts = []
+            for i in range(19, n):
+                pts += [left + step * i + step / 2, y(sum(closes[i - 19:i + 1]) / 20)]
+            cv.create_line(*pts, fill="#f59e0b", width=2)
+
         last = data[-1][3]
         col = c["up"] if last >= data[0][0] else c["down"]
         cv.create_line(left, y(last), left + pw, y(last), fill=col, dash=(4, 3))
@@ -659,7 +732,7 @@ class TradeDesk:
         body.columnconfigure(1, weight=1)
 
         qty_var = tk.StringVar(value=st["qty"])
-        price_var = tk.StringVar()
+        price_var = tk.StringVar(value=f"{self.data.stocks[self.symbol].price:.2f}")
         place_btn = FlatButton(body, self, "", None, color=c["up"], size=11, pady=8)
 
         def pick_side(side):
@@ -668,7 +741,8 @@ class TradeDesk:
 
         def pick_kind(kind):
             st["kind"] = kind
-            if kind == "Limit":
+            price_lbl.config(text="Trigger" if kind == "Stop-loss" else "Price")
+            if kind != "Market":
                 price_var.set(f"{self.data.stocks[self.symbol].price:.2f}")
             update()
 
@@ -691,10 +765,11 @@ class TradeDesk:
         FlatButton(qrow, self, "+", lambda: bump(1), size=11, padx=8, pady=1,
                    base="panel2").pack(side="left")
 
-        self.segmented(body, ["Market", "Limit"], st["kind"], pick_kind).grid(
+        self.segmented(body, ["Market", "Limit", "Stop-loss"], st["kind"], pick_kind).grid(
             row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        self.label(body, "Price", fg="muted", size=10).grid(row=3, column=0, sticky="w", pady=(10, 0))
+        price_lbl = self.label(body, "Trigger" if st["kind"] == "Stop-loss" else "Price", fg="muted", size=10)
+        price_lbl.grid(row=3, column=0, sticky="w", pady=(10, 0))
         price_entry = self.entry(body, price_var, width=12)
         price_entry.grid(row=3, column=1, sticky="e", pady=(10, 0), ipady=2)
 
@@ -727,7 +802,12 @@ class TradeDesk:
         price_var.trace_add("write", update_total)
         update()
         self.refreshers.append(update)
-        self.sym_listeners.append(update)
+
+        def on_symbol():
+            price_var.set(f"{self.data.stocks[self.symbol].price:.2f}")
+            update()
+
+        self.sym_listeners.append(on_symbol)
 
     def place_order(self, qty_txt, price_txt):
         st, s = self.order_state, self.data.stocks[self.symbol]
@@ -742,6 +822,9 @@ class TradeDesk:
         held = self.data.holdings.get(s.sym, [0, 0])[0]
         if st["side"] == "SELL" and qty > held:
             messagebox.showerror("Not enough shares", f"You hold {held} shares of {s.sym}.")
+            return
+        if st["side"] == "BUY" and qty * price > self.data.cash:
+            messagebox.showerror("Not enough funds", f"Available funds: {inr(self.data.cash)}.")
             return
         ok = messagebox.askyesno(
             "Confirm order",
@@ -861,29 +944,51 @@ class TradeDesk:
     def quote_tile(self, page, r, col):
         c = self.c
         _, body = self.tile(page, "Quote", r, col)
+        alert_var = tk.StringVar()
+
+        def set_alert():
+            try:
+                price = float(alert_var.get())
+                if price <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Price alert", "Enter a positive price.")
+                return
+            self.data.add_alert(self.symbol, price)
+            alert_var.set("")
+            self.refresh_status()
+
+        alert_row = tk.Frame(body, bg=c["panel"])
+        alert_row.pack(side="bottom", fill="x", pady=(8, 0))
+        self.label(alert_row, "Price alert", fg="muted", size=10).pack(side="left")
+        FlatButton(alert_row, self, "Set", set_alert, size=10, padx=10, pady=2,
+                   base="panel2").pack(side="right")
+        self.entry(alert_row, alert_var, width=9).pack(side="right", padx=(0, 4), ipady=2)
+        top = tk.Frame(body, bg=c["panel"])
+        top.pack(fill="both", expand=True)
 
         def render():
-            for w in body.winfo_children():
+            for w in top.winfo_children():
                 w.destroy()
             s = self.data.stocks[self.symbol]
-            self.label(body, s.sym, size=20, bold=True).pack(anchor="w")
-            self.label(body, s.name, fg="muted", size=10).pack(anchor="w")
-            self.label(body, inr(s.price), size=24, bold=True).pack(anchor="w", pady=(12, 0))
-            self.label(body, f"{s.change:+,.2f}  ({pct_text(s.pct)})", fg=self.pnl_color(s.change),
+            self.label(top, s.sym, size=20, bold=True).pack(anchor="w")
+            self.label(top, s.name, fg="muted", size=10).pack(anchor="w")
+            self.label(top, inr(s.price), size=24, bold=True).pack(anchor="w", pady=(6, 0))
+            self.label(top, f"{s.change:+,.2f}  ({pct_text(s.pct)})", fg=self.pnl_color(s.change),
                        size=11, bold=True).pack(anchor="w")
-            tk.Frame(body, bg=c["border"], height=1).pack(fill="x", pady=12)
+            tk.Frame(top, bg=c["border"], height=1).pack(fill="x", pady=8)
             for k, v in [("Open", s.open), ("High", s.high), ("Low", s.low), ("Prev close", s.prev)]:
-                row = tk.Frame(body, bg=c["panel"])
+                row = tk.Frame(top, bg=c["panel"])
                 row.pack(fill="x", pady=2)
                 self.label(row, k, fg="muted", size=10).pack(side="left")
                 self.label(row, f"{v:,.2f}", size=10, bold=True).pack(side="right")
-            row = tk.Frame(body, bg=c["panel"])
+            row = tk.Frame(top, bg=c["panel"])
             row.pack(fill="x", pady=2)
             self.label(row, "Volume", fg="muted", size=10).pack(side="left")
             self.label(row, f"{s.volume:,}", size=10, bold=True).pack(side="right")
 
-            self.label(body, "Day range", fg="muted", size=10).pack(anchor="w", pady=(14, 4))
-            bar = tk.Canvas(body, height=10, bg=c["panel2"], highlightthickness=0)
+            self.label(top, "Day range", fg="muted", size=10).pack(anchor="w", pady=(8, 4))
+            bar = tk.Canvas(top, height=10, bg=c["panel2"], highlightthickness=0)
             bar.pack(fill="x")
 
             def draw(e, s=s):
@@ -892,8 +997,18 @@ class TradeDesk:
                 bar.create_rectangle(0, 0, e.width * frac, 10, fill=c["accent"], outline="")
 
             bar.bind("<Configure>", draw)
-            btns = tk.Frame(body, bg=c["panel"])
-            btns.pack(fill="x", pady=(16, 0))
+            self.label(top, "Market depth", fg="muted", size=10).pack(anchor="w", pady=(8, 2))
+            depth = tk.Frame(top, bg=c["panel"])
+            depth.pack(fill="x")
+            depth.columnconfigure((0, 1, 2, 3), weight=1, uniform="d")
+            for i, text in enumerate(("Bid", "Qty", "Ask", "Qty")):
+                self.label(depth, text, fg="muted", size=9, bold=True).grid(row=0, column=i, sticky="e")
+            for r_i, (bid, bid_q, ask, ask_q) in enumerate(self.data.depth(s.sym), 1):
+                for i, (val, fg) in enumerate(((f"{bid:,.2f}", "up"), (f"{bid_q:,}", "text"),
+                                               (f"{ask:,.2f}", "down"), (f"{ask_q:,}", "text"))):
+                    self.label(depth, val, fg=fg, size=9).grid(row=r_i, column=i, sticky="e")
+            btns = tk.Frame(top, bg=c["panel"])
+            btns.pack(fill="x", pady=(8, 0))
             btns.columnconfigure((0, 1), weight=1, uniform="b")
             FlatButton(btns, self, "BUY", lambda: self.trade_from_quote("BUY"), color=c["up"],
                        pady=8).grid(row=0, column=0, sticky="ew", padx=(0, 4))
@@ -976,7 +1091,7 @@ class TradeDesk:
         frame, tree = self.table(body, cols)
         frame.pack(fill="both", expand=True)
         for i, o in enumerate(orders):
-            tag = "muted" if o["status"] == "Cancelled" else ("up" if o["side"] == "BUY" else "down")
+            tag = "muted" if o["status"] in ("Cancelled", "Rejected") else ("up" if o["side"] == "BUY" else "down")
             tree.insert("", "end", iid=str(i), tags=(tag,), values=(
                 o["time"], o["sym"], o["side"], o["qty"], o["kind"], f"{o['price']:,.2f}",
                 f"{o['qty'] * o['price']:,.2f}", o["status"]))

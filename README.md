@@ -16,10 +16,13 @@ It uses only the Python standard library (`tkinter`, `random`, `datetime`, `sys`
 
 - Top bar with five tabs: Markets, Watchlist, Portfolio, Orders and News. It also has a dark/light toggle and a live-prices toggle.
 - Index ticker strip: NIFTY 50, SENSEX, BANK NIFTY and others.
-- Candle/line price chart drawn on a Tkinter Canvas, with 1D, 1W, 1M and 1Y timeframes.
+- Candle/line price chart drawn on a Tkinter Canvas, with 1D, 1W, 1M and 1Y timeframes and an MA 20 moving average.
 - Watchlist you can search and sort.
-- Buy/sell order form with Market and Limit orders and a confirmation dialog.
+- Buy/sell order form with Market, Limit and Stop-loss orders, a funds check and a confirmation dialog.
+- Market depth (five bid and ask levels) and price alerts.
 - Portfolio with P&L and allocation, an order book where open orders can be cancelled, and news cards.
+
+Open limit and stop-loss orders execute, and price alerts fire, while live prices are on.
 
 ## Layout
 
@@ -41,9 +44,9 @@ The window has four stacked bands: top bar, ticker strip, content and status bar
 
 ## How it works
 
-Each user or timer event goes to a handler in the `TradeDesk` class, which uses `MarketData` and then updates the screen.
+User actions and timers go to the `TradeDesk` class. It reads and updates data in the `MarketData` class and shows the five tabs.
 
-![Flow from each event, through its TradeDesk handler and MarketData, to what updates on screen](docs/architecture.png)
+![User actions and timers go to the TradeDesk class, which exchanges data with the MarketData class and shows five tabs](docs/architecture.png)
 
 ## Paradigms used
 
