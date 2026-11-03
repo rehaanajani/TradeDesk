@@ -21,14 +21,10 @@ from tkinter import messagebox, ttk
 # ----------------------------------------------------------------- settings
 FONT = "Segoe UI" if sys.platform.startswith("win") else "Helvetica"
 
-THEMES = {
-    "dark": dict(bg="#0b0f14", panel="#131a22", panel2="#1a232e", border="#26313d",
-                 text="#e6edf3", muted="#8b98a5", accent="#3b82f6", up="#22c55e",
-                 down="#ef4444", hover="#1f2a37", select="#1e3a5f"),
-    "light": dict(bg="#eef1f5", panel="#ffffff", panel2="#f3f5f8", border="#d5dbe3",
-                  text="#111827", muted="#6b7280", accent="#2563eb", up="#16a34a",
-                  down="#dc2626", hover="#eaf0f7", select="#dbeafe"),
-}
+# Minimal palette: black on white, greys for structure, green and red only for price moves.
+COLORS = dict(bg="#e9e9e9", panel="#ffffff", panel2="#f6f6f6", border="#e9e9e9",
+              text="#111111", muted="#777777", accent="#111111", up="#15803d",
+              down="#b91c1c", hover="#f4f4f4", select="#ececec")
 
 TABS = ["Markets", "Watchlist", "Portfolio", "Orders", "News"]
 
@@ -287,7 +283,7 @@ class TradeDesk:
     def __init__(self, root):
         self.root = root
         self.data = MarketData()
-        self.theme, self.tab, self.symbol = "dark", "Markets", "RELIANCE"
+        self.tab, self.symbol = "Markets", "RELIANCE"
         self.tf, self.chart_type, self.sort_key = "1D", "Candle", "Symbol"
         self.show_gainers, self.live, self.show_ma = True, False, False
         self.order_state = dict(side="BUY", kind="Market", qty="1")
@@ -301,7 +297,7 @@ class TradeDesk:
     # ---------- shell (top bar, ticker strip, content, status bar)
     @property
     def c(self):
-        return THEMES[self.theme]
+        return COLORS
 
     def build(self):
         for w in self.root.winfo_children():
@@ -339,7 +335,7 @@ class TradeDesk:
         c = self.c
         bar = tk.Frame(self.root, bg=c["panel"])
         bar.grid(row=0, column=0, sticky="nsew", pady=(0, 1))
-        tk.Label(bar, text="▣ TradeDesk", bg=c["panel"], fg=c["accent"],
+        tk.Label(bar, text="TradeDesk", bg=c["panel"], fg=c["accent"],
                  font=(FONT, 16, "bold"), padx=18).pack(side="left")
         self.tab_btns = {}
         for name in TABS:
@@ -347,9 +343,6 @@ class TradeDesk:
                            active=(name == self.tab), size=11, padx=16, pady=14)
             b.pack(side="left", fill="y")
             self.tab_btns[name] = b
-        theme_txt = "☀ Light" if self.theme == "dark" else "☾ Dark"
-        FlatButton(bar, self, theme_txt, self.toggle_theme, size=10, padx=14,
-                   pady=14).pack(side="right", fill="y")
         self.live_btn = FlatButton(bar, self, "", self.toggle_live, size=10, padx=14, pady=14)
         self.live_btn.pack(side="right", fill="y")
         self._paint_live()
@@ -431,10 +424,6 @@ class TradeDesk:
     def _paint_live(self):
         self.live_btn.config(text="● Live prices: ON" if self.live else "○ Live prices: OFF")
         self.live_btn.set_active(self.live)
-
-    def toggle_theme(self):
-        self.theme = "light" if self.theme == "dark" else "dark"
-        self.build()
 
     # ---------- navigation (simple state machine on self.tab)
     def show_tab(self, name):
@@ -522,7 +511,7 @@ class TradeDesk:
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         for tag in ("up", "down"):
-            tree.tag_configure(tag, foreground=c[tag])
+            tree.tag_configure(tag, foreground=c["text"])  # rows stay black; the signs show direction
         tree.tag_configure("muted", foreground=c["muted"])
         return frame, tree
 
@@ -685,7 +674,7 @@ class TradeDesk:
             pts = []
             for i in range(19, n):
                 pts += [left + step * i + step / 2, y(sum(closes[i - 19:i + 1]) / 20)]
-            cv.create_line(*pts, fill="#f59e0b", width=2)
+            cv.create_line(*pts, fill=c["muted"], width=1)
 
         last = data[-1][3]
         col = c["up"] if last >= data[0][0] else c["down"]
@@ -733,7 +722,7 @@ class TradeDesk:
 
         qty_var = tk.StringVar(value=st["qty"])
         price_var = tk.StringVar(value=f"{self.data.stocks[self.symbol].price:.2f}")
-        place_btn = FlatButton(body, self, "", None, color=c["up"], size=11, pady=8)
+        place_btn = FlatButton(body, self, "", None, color=c["accent"], size=11, pady=8)
 
         def pick_side(side):
             st["side"] = side
@@ -794,7 +783,6 @@ class TradeDesk:
             else:
                 price_entry.config(state="normal")
             place_btn.config(text=f"{st['side']}  {s.sym}")
-            place_btn.set_color(c["up"] if st["side"] == "BUY" else c["down"])
             update_total()
 
         place_btn.command = lambda: self.place_order(qty_var.get(), price_var.get())
@@ -1010,9 +998,9 @@ class TradeDesk:
             btns = tk.Frame(top, bg=c["panel"])
             btns.pack(fill="x", pady=(8, 0))
             btns.columnconfigure((0, 1), weight=1, uniform="b")
-            FlatButton(btns, self, "BUY", lambda: self.trade_from_quote("BUY"), color=c["up"],
+            FlatButton(btns, self, "BUY", lambda: self.trade_from_quote("BUY"), color=c["accent"],
                        pady=8).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-            FlatButton(btns, self, "SELL", lambda: self.trade_from_quote("SELL"), color=c["down"],
+            FlatButton(btns, self, "SELL", lambda: self.trade_from_quote("SELL"), color=c["accent"],
                        pady=8).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         render()
@@ -1058,7 +1046,7 @@ class TradeDesk:
         total = self.data.summary()["current"] or 1
         rows = sorted(((sym, q * self.data.stocks[sym].price) for sym, (q, _) in
                        self.data.holdings.items()), key=lambda t: t[1], reverse=True)
-        palette = [c["accent"], c["up"], "#f59e0b", "#a855f7", "#14b8a6", "#ec4899", c["muted"]]
+        palette = ["#111111", "#444444", "#666666", "#888888", "#a3a3a3", "#bdbdbd", "#d4d4d4"]
         for i, (sym, value) in enumerate(rows):
             share = value / total
             line = tk.Frame(body, bg=c["panel"])
@@ -1122,7 +1110,7 @@ class TradeDesk:
             self.label(body, summary, fg="muted", size=11, justify="left", anchor="w",
                        wraplength=380).pack(anchor="w", fill="x", pady=(6, 0))
             when = (now - timedelta(minutes=12 * i + 5)).strftime("%H:%M")
-            self.label(body, f"{when} IST", fg="accent", size=9, bold=True).pack(side="bottom", anchor="w")
+            self.label(body, f"{when} IST", fg="muted", size=9).pack(side="bottom", anchor="w")
 
 
 if __name__ == "__main__":
