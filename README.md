@@ -65,3 +65,7 @@ User actions and timers go to the `TradeDesk` class. It reads and updates data i
 - **Functional:** `filter`, `sorted`, `map` and `lambda`.
 - **Procedural:** formatting helpers.
 - **State machine:** tab navigation.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
