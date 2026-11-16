@@ -425,7 +425,7 @@ class FlatButton(tk.Label):
     def __init__(self, parent, app, text, command=None, active=False, color=None,
                  size=10, bold=False, padx=12, pady=6, base="panel"):
         self.app, self.command, self.active, self.color, self.base = app, command, active, color, base
-        super().__init__(parent, text=text, padx=padx, pady=pady, cursor="hand2",
+        super().__init__(parent, text=text, padx=padx, pady=pady,
                          font=(FONT, size, "bold" if bold or color else "normal"))
         self.bind("<Enter>", lambda e: self._paint(hover=True))
         self.bind("<Leave>", lambda e: self._paint())
@@ -756,6 +756,9 @@ class TradeDesk:
         self.canvas = tk.Canvas(body, bg=c["panel"], highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda e: self.draw_chart())
+        self.canvas.bind("<Motion>", self.chart_hover)
+        self.canvas.bind("<Leave>", lambda e: self.canvas.delete("hover"))
+        self.chart_geo = None
         self.update_chart()
         self.refreshers.append(self.update_chart)
         self.sym_listeners.append(self.update_chart)
@@ -850,6 +853,38 @@ class TradeDesk:
         cv.create_rectangle(left + pw + 2, y(last) - 10, w, y(last) + 10, fill=col, outline=col)
         cv.create_text(left + pw + 10, y(last), text=f"{last:,.2f}", anchor="w",
                        fill="#ffffff", font=(FONT, 9, "bold"))
+        self.chart_geo = (left, top, pw, ph, step, hi, lo, data)
+
+    def chart_hover(self, e):
+        cv, c, geo = self.canvas, self.c, self.chart_geo
+        cv.delete("hover")
+        if not geo:
+            return
+        left, top, pw, ph, step, hi, lo, data = geo
+        if not (left <= e.x <= left + pw and top <= e.y <= top + ph):
+            return
+        i = min(len(data) - 1, max(0, int((e.x - left) / step)))
+        o, hh, ll, cl = data[i]
+        cx = left + step * i + step / 2
+        price = hi - (e.y - top) / ph * (hi - lo)
+        cv.create_line(cx, top, cx, top + ph, fill=c["muted"], dash=(2, 3), tags="hover")
+        cv.create_line(left, e.y, left + pw, e.y, fill=c["muted"], dash=(2, 3), tags="hover")
+        cv.create_rectangle(left + pw + 2, e.y - 10, left + pw + 76, e.y + 10, fill=c["text"],
+                            outline=c["text"], tags="hover")
+        cv.create_text(left + pw + 10, e.y, text=f"{price:,.2f}", anchor="w", fill="#ffffff",
+                       font=(FONT, 9, "bold"), tags="hover")
+        label = self.x_label(i, len(data))
+        cv.create_rectangle(cx - 34, top + ph + 2, cx + 34, top + ph + 20, fill=c["text"],
+                            outline=c["text"], tags="hover")
+        cv.create_text(cx, top + ph + 11, text=label, fill="#ffffff", font=(FONT, 9, "bold"), tags="hover")
+        change = (cl - o) / o * 100
+        text = f"{label}   O {o:,.2f}   H {hh:,.2f}   L {ll:,.2f}   C {cl:,.2f}   {pct_text(change)}"
+        box = cv.create_text(left + 10, top + 8, text=text, anchor="nw", fill=c["up" if cl >= o else "down"],
+                             font=(FONT, 10, "bold"), tags="hover")
+        x1, y1, x2, y2 = cv.bbox(box)
+        back = cv.create_rectangle(x1 - 6, y1 - 4, x2 + 6, y2 + 4, fill=c["panel"], outline=c["border"],
+                                   tags="hover")
+        cv.tag_lower(back, box)
 
     def watch_tile(self, page, r, col):
         head, body = self.tile(page, "Watchlist", r, col)
@@ -1192,7 +1227,7 @@ class TradeDesk:
             for w in body.winfo_children():
                 w.destroy()
             for sym, text, tone in self.data.signals()[:8]:
-                row = tk.Frame(body, bg=c["panel"], cursor="hand2")
+                row = tk.Frame(body, bg=c["panel"])
                 row.pack(fill="x", pady=1)
                 dot = self.label(row, "▲" if tone == "up" else "▼", fg=tone, size=10)
                 dot.pack(side="left")
@@ -1312,7 +1347,7 @@ class TradeDesk:
             for w in body.winfo_children():
                 w.destroy()
             for s in self.data.movers(self.show_gainers):
-                row = tk.Frame(body, bg=c["panel"], cursor="hand2")
+                row = tk.Frame(body, bg=c["panel"])
                 row.pack(fill="x", pady=2)
                 a = self.label(row, s.sym, size=11, bold=True)
                 a.pack(side="left")
