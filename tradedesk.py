@@ -1,3 +1,4 @@
+import math
 import random
 import sys
 import tkinter as tk
@@ -8,9 +9,18 @@ FONT = "Segoe UI" if sys.platform.startswith("win") else "Helvetica"
 
 COLORS = dict(bg="#e9e9e9", panel="#ffffff", panel2="#f6f6f6", border="#e9e9e9",
               text="#111111", muted="#777777", accent="#111111", up="#15803d",
-              down="#b91c1c", hover="#f4f4f4", select="#ececec")
+              down="#b91c1c", warn="#b45309", hover="#f4f4f4", select="#ececec")
 
-TABS = ["Markets", "Watchlist", "Portfolio", "Orders", "News"]
+TABS = ["Markets", "Insights", "Watchlist", "Portfolio", "Orders", "News"]
+
+SECTORS = {"RELIANCE": "Energy", "TCS": "IT", "HDFCBANK": "Banking", "INFY": "IT",
+           "ICICIBANK": "Banking", "SBIN": "Banking", "BHARTIARTL": "Telecom", "ITC": "FMCG",
+           "LT": "Infra", "TATAMOTORS": "Auto", "WIPRO": "IT", "ADANIENT": "Infra",
+           "MARUTI": "Auto", "SUNPHARMA": "Pharma"}
+
+CHARGES = dict(brokerage=0.0, stt=0.001, exchange=0.0000297, sebi=0.000001, stamp=0.00015, gst=0.18)
+
+MOODS = ((25, "Fearful"), (45, "Cautious"), (55, "Neutral"), (75, "Optimistic"), (101, "Greedy"))
 
 TIMEFRAMES = {"1D": (75, 0.0015), "1W": (35, 0.004), "1M": (22, 0.012), "1Y": (52, 0.028)}
 
@@ -70,6 +80,49 @@ def pct_text(x):
 def market_open(now):
     minutes = now.hour * 60 + now.minute
     return now.weekday() < 5 and 9 * 60 + 15 <= minutes <= 15 * 60 + 30
+
+
+def blend(a, b, t):
+    pa = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    pb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(pa, pb))
+
+
+class UpDownGame:
+    def __init__(self):
+        self.rng = random.Random()
+        self.score = self.rounds = self.streak = self.best = 0
+        self.new_round()
+
+    def new_round(self):
+        self.sym = self.rng.choice(STOCKS)[0]
+        trend = self.rng.choice((-1, 1)) * self.rng.uniform(0.002, 0.006)
+        price, out = 1000.0, []
+        for i in range(41):
+            follow = self.rng.random() < 0.68
+            move = abs(self.rng.gauss(0, 0.008)) * (1 if (trend > 0) == follow else -1) + trend * 0.3
+            op, cl = price, price * (1 + move)
+            out.append([op, max(op, cl) * (1 + abs(self.rng.gauss(0, 0.003))),
+                        min(op, cl) * (1 - abs(self.rng.gauss(0, 0.003))), cl])
+            price = cl
+        self.candles, self.revealed, self.last = out, False, None
+
+    def recent_trend(self):
+        closes = [x[3] for x in self.candles[30:40]]
+        return "up" if closes[-1] >= closes[0] else "down"
+
+    def guess(self, up):
+        if self.revealed:
+            return None
+        nxt = self.candles[40]
+        actual_up = nxt[3] >= nxt[0]
+        correct = up == actual_up
+        self.rounds += 1
+        self.score += correct
+        self.streak = self.streak + 1 if correct else 0
+        self.best = max(self.best, self.streak)
+        self.revealed, self.last = True, (correct, actual_up)
+        return self.last
 
 
 class Stock:
@@ -199,6 +252,158 @@ class MarketData:
         if order["status"] == "Executed":
             self._settle(order)
 
+    def ma20(self, sym, back=0):
+        closes = [x[3] for x in self.candles(sym, "1M")]
+        end = len(closes) - back
+        return sum(closes[end - 20:end]) / 20
+
+    def has_stop(self, sym):
+        return any(o["status"] == "Open" and o["sym"] == sym and o["kind"] == "Stop-loss"
+                   and o["side"] == "SELL" for o in self.orders)
+
+    def charges(self, side, qty, price):
+        value = qty * price
+        brokerage = value * CHARGES["brokerage"]
+        stt = value * CHARGES["stt"]
+        exchange = value * CHARGES["exchange"]
+        sebi = value * CHARGES["sebi"]
+        stamp = value * CHARGES["stamp"] if side == "BUY" else 0.0
+        gst = (brokerage + exchange + sebi) * CHARGES["gst"]
+        rows = [("Brokerage (delivery)", brokerage), ("STT 0.1%", stt), ("Exchange charges", exchange),
+                ("SEBI fee", sebi), ("Stamp duty 0.015%", stamp), ("GST 18%", gst)]
+        return rows, sum(v for _, v in rows)
+
+    def break_even(self, qty, price):
+        _, buy_cost = self.charges("BUY", qty, price)
+        _, sell_cost = self.charges("SELL", qty, price)
+        return price + (buy_cost + sell_cost) / qty
+
+    def coach(self, side, qty, price, kind, sym):
+        s, notes = self.stocks[sym], []
+        value = qty * price
+        capital = self.cash + self.summary()["current"]
+        share = value / capital * 100 if capital else 0
+        ma = self.ma20(sym)
+        if side == "BUY":
+            if share > 25:
+                notes.append(("risk", f"This order is {share:.0f}% of your capital. Keep one trade under 10%."))
+            elif share > 10:
+                notes.append(("warn", f"This order is {share:.0f}% of your capital. Most traders stay under 10%."))
+            else:
+                notes.append(("ok", f"Position size is {share:.1f}% of your capital."))
+            if price < ma:
+                notes.append(("warn", f"Price is below its 20-day average ({ma:,.2f}), so the trend is down."))
+            else:
+                notes.append(("ok", f"Price is above its 20-day average ({ma:,.2f}), so the trend is up."))
+            if s.pct <= -2:
+                notes.append(("warn", f"{sym} is falling {s.pct:.1f}% today. Buying a falling stock is risky."))
+            elif s.pct >= 3:
+                notes.append(("warn", f"{sym} is already up {s.pct:.1f}% today. You may be chasing the move."))
+            else:
+                notes.append(("ok", f"Today's move ({pct_text(s.pct)}) is normal."))
+            held = self.holdings.get(sym, [0, 0])[0] * s.price + value
+            conc = held / (self.summary()["current"] + value) * 100
+            if conc > 40:
+                notes.append(("risk", f"{sym} would be {conc:.0f}% of your holdings. Spread across more stocks."))
+            if not self.has_stop(sym):
+                notes.append(("warn", "No stop-loss is set for this stock. Plan your exit before you enter."))
+        else:
+            q, avg = self.holdings.get(sym, [0, 0.0])
+            pnl = (price - avg) * qty
+            if pnl < 0:
+                notes.append(("warn", f"You are selling at a loss of {inr(-pnl)} (you bought at {avg:,.2f})."))
+            else:
+                notes.append(("ok", f"You are booking a profit of {inr(pnl)} before charges."))
+            if s.pct <= -3:
+                notes.append(("warn", f"{sym} is down {s.pct:.1f}% today. Make sure this is not a panic sale."))
+            if price > ma:
+                notes.append(("ok", f"Price is still above its 20-day average ({ma:,.2f})."))
+        if kind == "Market" and not market_open(datetime.now()):
+            notes.append(("warn", "The market is closed. A real market order would wait for the next open."))
+        levels = [lvl for lvl, _ in notes]
+        verdict = "Risky" if "risk" in levels else ("Caution" if "warn" in levels else "Safe")
+        return verdict, notes
+
+    def mood(self):
+        stocks = list(self.stocks.values())
+        up = len([s for s in stocks if s.change >= 0])
+        avg = sum(s.pct for s in stocks) / len(stocks)
+        nifty = self.indices[0].pct
+        score = max(0, min(100, round(50 + avg * 12 + (up / len(stocks) - 0.5) * 60 + nifty * 8)))
+        label = next(name for limit, name in MOODS if score < limit)
+        return dict(score=score, label=label, up=up, down=len(stocks) - up, avg=avg, nifty=nifty)
+
+    def sectors(self):
+        groups = {}
+        for s in self.stocks.values():
+            groups.setdefault(SECTORS[s.sym], []).append(s)
+        rows = [(name, sum(s.pct for s in ss) / len(ss), ss) for name, ss in groups.items()]
+        return sorted(rows, key=lambda t: t[1], reverse=True)
+
+    def health(self):
+        if not self.holdings:
+            return dict(score=0, label="No holdings", notes=[("warn", "Buy a few stocks to see your portfolio health.")])
+        p = self.summary()
+        notes, score = [], 100
+        values = {sym: q * self.stocks[sym].price for sym, (q, _) in self.holdings.items()}
+        top_sym, top_val = max(values.items(), key=lambda kv: kv[1])
+        top_share = top_val / p["current"] * 100
+        if top_share > 40:
+            score -= 25
+            notes.append(("risk", f"{top_sym} is {top_share:.0f}% of your holdings."))
+        else:
+            notes.append(("ok", f"Largest holding is {top_sym} at {top_share:.0f}%."))
+        sectors = {SECTORS[sym] for sym in self.holdings}
+        if len(sectors) < 3:
+            score -= 15
+            notes.append(("warn", f"Only {len(sectors)} sector(s). Add stocks from other sectors."))
+        else:
+            notes.append(("ok", f"Spread across {len(sectors)} sectors."))
+        losers = [sym for sym, (q, avg) in self.holdings.items() if self.stocks[sym].price < avg]
+        if losers:
+            score -= 8 * len(losers)
+            notes.append(("warn", f"Below buy price: {', '.join(losers)}."))
+        else:
+            notes.append(("ok", "Every holding is above its buy price."))
+        cash_share = self.cash / (self.cash + p["current"]) * 100
+        if cash_share < 10:
+            score -= 10
+            notes.append(("warn", f"Only {cash_share:.0f}% in cash. Keep some ready."))
+        else:
+            notes.append(("ok", f"{cash_share:.0f}% of your money is in cash."))
+        no_stop = [sym for sym in self.holdings if not self.has_stop(sym)]
+        if no_stop:
+            score -= min(20, 4 * len(no_stop))
+            notes.append(("warn", f"{len(no_stop)} of {len(self.holdings)} holdings have no stop-loss."))
+        score = max(0, min(100, score))
+        label = "Healthy" if score >= 75 else ("Needs attention" if score >= 50 else "At risk")
+        return dict(score=score, label=label, notes=notes)
+
+    def signals(self):
+        out = []
+        for s in self.stocks.values():
+            now_ma, prev_ma = self.ma20(s.sym), self.ma20(s.sym, back=1)
+            closes = [x[3] for x in self.candles(s.sym, "1M")]
+            span = (s.high - s.low) or 1
+            if closes[-2] < prev_ma and s.price >= now_ma:
+                out.append((5, s.sym, "Crossed above its 20-day average", "up"))
+            elif closes[-2] > prev_ma and s.price <= now_ma:
+                out.append((5, s.sym, "Fell below its 20-day average", "down"))
+            elif abs(s.pct) >= 2:
+                out.append((4, s.sym, f"Big move today: {pct_text(s.pct)}", "up" if s.pct > 0 else "down"))
+            elif (s.high - s.price) / span <= 0.15:
+                out.append((3, s.sym, "Trading near today's high", "up"))
+            elif (s.price - s.low) / span <= 0.15:
+                out.append((3, s.sym, "Trading near today's low", "down"))
+            elif abs(s.open - s.prev) / s.prev >= 0.004:
+                gap = "up" if s.open > s.prev else "down"
+                out.append((2, s.sym, f"Opened with a gap {gap}", gap))
+            else:
+                side = "above" if s.price >= now_ma else "below"
+                out.append((1, s.sym, f"Steady, {side} its 20-day average", "up" if side == "above" else "down"))
+        out.sort(key=lambda t: (-t[0], t[1]))
+        return [(sym, text, tone) for _, sym, text, tone in out]
+
     def _settle(self, order):
         sym = order["sym"]
         value = order["qty"] * order["price"]
@@ -256,6 +461,7 @@ class TradeDesk:
         self.tf, self.chart_type, self.sort_key = "1D", "Candle", "Symbol"
         self.show_gainers, self.live, self.show_ma = True, False, False
         self.order_state = dict(side="BUY", kind="Market", qty="1")
+        self.game = UpDownGame()
         root.title("TradeDesk")
         root.geometry("1360x860")
         root.minsize(1180, 760)
@@ -475,7 +681,7 @@ class TradeDesk:
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         for tag in ("up", "down"):
-            tree.tag_configure(tag, foreground=c["text"])  # rows stay black; the signs show direction
+            tree.tag_configure(tag, foreground=c["text"])
         tree.tag_configure("muted", foreground=c["muted"])
         return frame, tree
 
@@ -774,17 +980,301 @@ class TradeDesk:
         if st["side"] == "BUY" and qty * price > self.data.cash:
             messagebox.showerror("Not enough funds", f"Available funds: {inr(self.data.cash)}.")
             return
-        ok = messagebox.askyesno(
-            "Confirm order",
-            f"{st['side']} {qty} × {s.sym}\nType: {st['kind']}\n"
-            f"Price: {inr(price)}\nValue: {inr(qty * price)}\n\nPlace this demo order?")
-        if not ok:
+        if not self.review_order(st["side"], qty, price, st["kind"], s.sym):
             return
         status = "Executed" if st["kind"] == "Market" else "Open"
         self.data.place(dict(time=datetime.now().strftime("%H:%M:%S"), sym=s.sym, side=st["side"],
                              qty=qty, kind=st["kind"], price=price, status=status))
         messagebox.showinfo("Order placed", f"{st['side']} {qty} {s.sym} — {status}.")
         self.refresh()
+
+    def review_order(self, side, qty, price, kind, sym):
+        c = self.c
+        verdict, notes = self.data.coach(side, qty, price, kind, sym)
+        rows, total = self.data.charges(side, qty, price)
+        value = qty * price
+        result = {"ok": False}
+        win = tk.Toplevel(self.root)
+        win.title("Review order")
+        win.configure(bg=c["panel"])
+        win.transient(self.root)
+        win.resizable(False, False)
+        box = tk.Frame(win, bg=c["panel"])
+        box.pack(fill="both", expand=True, padx=24, pady=20)
+
+        top = tk.Frame(box, bg=c["panel"])
+        top.pack(fill="x")
+        self.label(top, f"{side} {qty} × {sym}", size=20, bold=True).pack(side="left")
+        tone = {"Safe": "up", "Caution": "warn", "Risky": "down"}[verdict]
+        tk.Label(top, text=verdict.upper(), bg=c[tone], fg="#ffffff", font=(FONT, 11, "bold"),
+                 padx=12, pady=4).pack(side="right")
+        self.label(box, f"{kind} order at {inr(price)}  ·  value {inr(value)}", fg="muted",
+                   size=11).pack(anchor="w", pady=(2, 14))
+
+        self.label(box, "TRADE COACH", fg="muted", size=9, bold=True).pack(anchor="w", pady=(0, 6))
+        for level, text in notes:
+            row = tk.Frame(box, bg=c["panel"])
+            row.pack(fill="x", pady=2)
+            icon, col = {"ok": ("✓", "up"), "warn": ("!", "warn"), "risk": ("✗", "down")}[level]
+            self.label(row, icon, fg=col, size=12, bold=True, width=2).pack(side="left", anchor="n")
+            self.label(row, text, size=11, wraplength=440, justify="left").pack(side="left", anchor="w")
+
+        tk.Frame(box, bg=c["border"], height=1).pack(fill="x", pady=14)
+        self.label(box, "TRUE COST IN INDIA (DELIVERY TRADE)", fg="muted", size=9, bold=True).pack(
+            anchor="w", pady=(0, 6))
+        lines = [(name, inr(v), "muted", False) for name, v in rows]
+        lines.append(("Total charges", inr(total), "text", True))
+        if side == "BUY":
+            lines.append(("You pay", inr(value + total), "text", True))
+            lines.append(("Break-even price", inr(self.data.break_even(qty, price)), "warn", True))
+        else:
+            q, avg = self.data.holdings.get(sym, [0, 0.0])
+            lines.append(("You receive", inr(value - total), "text", True))
+            net = (price - avg) * qty - total
+            lines.append(("Profit after charges", f"{net:+,.2f}", self.pnl_color(net), True))
+        for name, text, col, bold in lines:
+            row = tk.Frame(box, bg=c["panel"])
+            row.pack(fill="x", pady=1)
+            self.label(row, name, fg="text" if bold else "muted", size=11, bold=bold).pack(side="left")
+            self.label(row, text, fg=col, size=11, bold=bold).pack(side="right")
+        if side == "BUY":
+            self.label(box, "The price has to rise above the break-even price before you make any profit.",
+                       fg="muted", size=9, wraplength=460, justify="left").pack(anchor="w", pady=(6, 0))
+
+        def close(ok):
+            result["ok"] = ok
+            win.destroy()
+
+        buttons = tk.Frame(box, bg=c["panel"])
+        buttons.pack(fill="x", pady=(18, 0))
+        buttons.columnconfigure((0, 1), weight=1, uniform="rb")
+        FlatButton(buttons, self, "Cancel", lambda: close(False), size=11, pady=9,
+                   base="panel2").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        FlatButton(buttons, self, f"Place {side.lower()} order", lambda: close(True), color=c["accent"],
+                   size=11, pady=9).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        win.bind("<Escape>", lambda e: close(False))
+        win.bind("<Return>", lambda e: close(True))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        win.grab_set()
+        win.focus_set()
+        self.root.wait_window(win)
+        return result["ok"]
+
+    def page_insights(self, page):
+        for col in range(4):
+            page.columnconfigure(col, weight=1, uniform="i")
+        page.rowconfigure(0, weight=1, uniform="ir")
+        page.rowconfigure(1, weight=1, uniform="ir")
+        self.mood_tile(page, 0, 0)
+        self.sector_tile(page, 0, 1, 2)
+        self.health_tile(page, 0, 3)
+        self.signals_tile(page, 1, 0, 2)
+        self.game_tile(page, 1, 2, 2)
+
+    def mood_tile(self, page, r, col):
+        c = self.c
+        _, body = self.tile(page, "Market mood", r, col)
+        cv = tk.Canvas(body, bg=c["panel"], highlightthickness=0, height=140)
+        cv.pack(fill="x")
+        score_lbl = self.label(body, size=22, bold=True)
+        score_lbl.pack(anchor="center")
+        info = tk.Frame(body, bg=c["panel"])
+        info.pack(fill="x", pady=(8, 0))
+        bands = [(0, 25, c["down"]), (25, 45, blend(c["down"], "#ffffff", 0.55)), (45, 55, "#cfcfcf"),
+                 (55, 75, blend(c["up"], "#ffffff", 0.55)), (75, 100, c["up"])]
+
+        def render():
+            if not cv.winfo_exists():
+                return
+            m = self.data.mood()
+            cv.delete("all")
+            w = max(cv.winfo_width(), 200)
+            radius = min(w / 2 - 14, 118)
+            cx, cy = w / 2, radius + 14
+            for a, b, colour in bands:
+                cv.create_arc(cx - radius, cy - radius, cx + radius, cy + radius, start=180 - b * 1.8,
+                              extent=(b - a) * 1.8, style="arc", width=18, outline=colour)
+            angle = math.radians(180 - m["score"] * 1.8)
+            cv.create_line(cx, cy, cx + (radius - 26) * math.cos(angle), cy - (radius - 26) * math.sin(angle),
+                           width=3, fill=c["text"])
+            cv.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, fill=c["text"], outline="")
+            cv.configure(height=cy + 8)
+            score_lbl.config(text=f"{m['score']}  ·  {m['label']}")
+            for wdg in info.winfo_children():
+                wdg.destroy()
+            for name, text, tone in (("Advancing / declining", f"{m['up']} / {m['down']}", "text"),
+                                     ("Average move", pct_text(m["avg"]), self.pnl_color(m["avg"])),
+                                     ("NIFTY 50", pct_text(m["nifty"]), self.pnl_color(m["nifty"]))):
+                row = tk.Frame(info, bg=c["panel"])
+                row.pack(fill="x", pady=1)
+                self.label(row, name, fg="muted", size=10).pack(side="left")
+                self.label(row, text, fg=tone, size=10, bold=True).pack(side="right")
+
+        cv.bind("<Configure>", lambda e: render())
+        self.refreshers.append(render)
+
+    def heat(self, pct):
+        base = self.c["up"] if pct >= 0 else self.c["down"]
+        return blend("#ffffff", base, 0.12 + min(abs(pct) / 2.5, 1) * 0.83)
+
+    def sector_tile(self, page, r, col, span):
+        c = self.c
+        head, body = self.tile(page, "Sector heatmap", r, col, colspan=span)
+        self.label(head, "Green is up today, red is down. Darker means a bigger move.", fg="muted",
+                   size=9).pack(side="right")
+
+        def render():
+            for w in body.winfo_children():
+                w.destroy()
+            for i, (name, pct, stocks) in enumerate(self.data.sectors()):
+                body.columnconfigure(i % 4, weight=1, uniform="s")
+                body.rowconfigure(i // 4, weight=1, uniform="sr")
+                bg = self.heat(pct)
+                fg = "#ffffff" if abs(pct) >= 1.0 else c["text"]
+                cell = tk.Frame(body, bg=bg)
+                cell.grid(row=i // 4, column=i % 4, sticky="nsew", padx=3, pady=3)
+                tk.Label(cell, text=name, bg=bg, fg=fg, font=(FONT, 12, "bold")).pack(anchor="w", padx=12,
+                                                                                      pady=(10, 0))
+                tk.Label(cell, text=pct_text(pct), bg=bg, fg=fg, font=(FONT, 18, "bold")).pack(anchor="w",
+                                                                                               padx=12)
+                tk.Label(cell, text=", ".join(s.sym for s in stocks), bg=bg, fg=fg, font=(FONT, 9),
+                         wraplength=180, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+
+        render()
+        self.refreshers.append(render)
+
+    def note_rows(self, parent, notes, wrap=260):
+        c = self.c
+        for level, text in notes:
+            row = tk.Frame(parent, bg=c["panel"])
+            row.pack(fill="x", pady=2)
+            icon, col = {"ok": ("✓", "up"), "warn": ("!", "warn"), "risk": ("✗", "down")}[level]
+            self.label(row, icon, fg=col, size=11, bold=True, width=2).pack(side="left", anchor="n")
+            self.label(row, text, size=10, wraplength=wrap, justify="left").pack(side="left", anchor="w")
+
+    def health_tile(self, page, r, col):
+        c = self.c
+        _, body = self.tile(page, "Portfolio health", r, col)
+
+        def render():
+            for w in body.winfo_children():
+                w.destroy()
+            h = self.data.health()
+            tone = "up" if h["score"] >= 75 else ("warn" if h["score"] >= 50 else "down")
+            line = tk.Frame(body, bg=c["panel"])
+            line.pack(fill="x")
+            self.label(line, str(h["score"]), size=28, bold=True).pack(side="left")
+            self.label(line, " / 100", fg="muted", size=12).pack(side="left", anchor="s", pady=(0, 6))
+            self.label(line, h["label"], fg=tone, size=12, bold=True).pack(side="right", anchor="s", pady=(0, 6))
+            bar = tk.Canvas(body, height=8, bg=c["panel2"], highlightthickness=0)
+            bar.pack(fill="x", pady=(4, 10))
+            bar.bind("<Configure>", lambda e: (bar.delete("all"), bar.create_rectangle(
+                0, 0, e.width * h["score"] / 100, 8, fill=c[tone], outline="")))
+            self.note_rows(body, h["notes"])
+
+        render()
+        self.refreshers.append(render)
+
+    def signals_tile(self, page, r, col, span):
+        c = self.c
+        head, body = self.tile(page, "Signals", r, col, colspan=span)
+        self.label(head, "Rule-based checks on every stock. Click one to open its chart.", fg="muted",
+                   size=9).pack(side="right")
+
+        def open_chart(sym):
+            self.symbol = sym
+            self.show_tab("Markets")
+
+        def render():
+            for w in body.winfo_children():
+                w.destroy()
+            for sym, text, tone in self.data.signals()[:8]:
+                row = tk.Frame(body, bg=c["panel"], cursor="hand2")
+                row.pack(fill="x", pady=1)
+                dot = self.label(row, "▲" if tone == "up" else "▼", fg=tone, size=10)
+                dot.pack(side="left")
+                name = self.label(row, sym, size=11, bold=True, width=12, anchor="w")
+                name.pack(side="left", padx=(6, 0))
+                desc = self.label(row, text, size=11)
+                desc.pack(side="left")
+                s = self.data.stocks[sym]
+                px = self.label(row, f"{s.price:,.2f}  {pct_text(s.pct)}", fg=self.pnl_color(s.pct), size=10)
+                px.pack(side="right")
+                for wdg in (row, dot, name, desc, px):
+                    wdg.bind("<Button-1>", lambda e, sy=sym: open_chart(sy))
+
+        render()
+        self.refreshers.append(render)
+
+    def game_tile(self, page, r, col, span):
+        c, g = self.c, self.game
+        head, body = self.tile(page, "Practice: up or down?", r, col, colspan=span)
+        score = self.label(head, fg="muted", size=10, bold=True)
+        score.pack(side="right")
+        cv = tk.Canvas(body, bg=c["panel"], highlightthickness=0)
+        controls = tk.Frame(body, bg=c["panel"])
+        controls.pack(side="bottom", fill="x", pady=(8, 0))
+        cv.pack(fill="both", expand=True)
+        feedback = self.label(controls, size=10, wraplength=330, justify="left")
+        feedback.pack(side="left", fill="x", expand=True, anchor="w")
+
+        def draw():
+            if not cv.winfo_exists():
+                return
+            cv.delete("all")
+            w, h = cv.winfo_width(), cv.winfo_height()
+            if w < 80 or h < 60:
+                return
+            shown = g.candles[:41 if g.revealed else 40]
+            hi, lo = max(x[1] for x in g.candles), min(x[2] for x in g.candles)
+            step = (w - 20) / 41
+
+            def y(p):
+                return 6 + (hi - p) / ((hi - lo) or 1) * (h - 12)
+
+            for i, (o, hh, ll, cl) in enumerate(shown):
+                cx = 10 + step * i + step / 2
+                colour = c["up"] if cl >= o else c["down"]
+                cv.create_line(cx, y(hh), cx, y(ll), fill=colour)
+                y1, y2 = y(o), y(cl)
+                cv.create_rectangle(cx - step * 0.3, min(y1, y2), cx + step * 0.3, max(y1, y2) + 1,
+                                    fill=colour, outline=colour)
+            nx = 10 + step * 40 + step / 2
+            if g.revealed:
+                cv.create_rectangle(nx - step * 0.6, 2, nx + step * 0.6, h - 2, outline=c["text"], dash=(3, 2))
+            else:
+                cv.create_text(nx, h / 2, text="?", font=(FONT, 20, "bold"), fill=c["muted"])
+            score.config(text=f"Score {g.score}/{g.rounds}   Streak {g.streak}   Best {g.best}")
+            if not g.revealed:
+                feedback.config(text="Will the next candle close higher or lower? Read the trend, then guess.",
+                                fg=c["text"])
+            else:
+                correct, actual_up = g.last
+                trend = g.recent_trend()
+                tip = (f"The last 10 candles were trending {trend}. Trends often continue."
+                       if (trend == "up") == actual_up else
+                       f"The last 10 candles were trending {trend}, but this one went against it.")
+                feedback.config(text=f"{'Correct' if correct else 'Wrong'}: it went {'up' if actual_up else 'down'}. {tip}",
+                                fg=c["up"] if correct else c["down"])
+
+        def guess(up):
+            g.guess(up)
+            draw()
+
+        def next_round():
+            g.new_round()
+            draw()
+
+        FlatButton(controls, self, "Next chart", next_round, size=10, padx=12, pady=6,
+                   base="panel2").pack(side="right")
+        FlatButton(controls, self, "▼ Down", lambda: guess(False), color=c["down"], size=10,
+                   padx=14, pady=6).pack(side="right", padx=6)
+        FlatButton(controls, self, "▲ Up", lambda: guess(True), color=c["up"], size=10,
+                   padx=14, pady=6).pack(side="right")
+        cv.bind("<Configure>", lambda e: draw())
 
     def portfolio_tile(self, page, r, col):
         c = self.c
